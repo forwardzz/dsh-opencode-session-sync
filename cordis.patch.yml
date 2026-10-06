@@ -1,0 +1,4 @@
+# dsh-opencode-session-sync 的 loader patch 层：把自己插进 profile 插件树。
+- insert:
+    - id: opencode-session-sync
+      name: dsh-opencode-session-sync
