@@ -76,7 +76,7 @@ console.log(`盘点：OpenCode 共 ${summary.total} 个会话，列出 ${summary
 
 const first = await runSync({ persistence, workspaces: fakeWorkspaces, projections: null }, { limit: 2 })
 assert.equal(first.ok, true, first.reason)
-console.log(`第一次：导入 ${first.imported}、已存在 ${first.existing}、跳过 ${first.skipped}、失败 ${first.failed}、事件 ${first.events}`)
+console.log(`第一次：导入 ${first.imported}、追加 ${first.appended}、已同步 ${first.upToDate}、跳过 ${first.skipped}、失败 ${first.failed}、事件 ${first.events}`)
 assert.equal(first.failed, 0, JSON.stringify(first.sessions.filter((s) => s.status === 'failed'), null, 2))
 assert.ok(first.imported > 0, '应至少导入一个会话')
 assert.equal(first.workspace.created, first.imported, '每个新会话都应新建/登记工作区')
@@ -86,13 +86,14 @@ assert.ok(buckets.length > 0, '会话应落到按 cwd 命名的分桶目录')
 console.log(`分桶目录：${buckets.join(' | ')}`)
 
 const second = await runSync({ persistence, workspaces: fakeWorkspaces, projections: null }, { limit: 2 })
-console.log(`第二次：导入 ${second.imported}、已存在 ${second.existing}`)
+console.log(`第二次：导入 ${second.imported}、追加 ${second.appended}、已同步 ${second.upToDate}`)
 assert.equal(second.imported, 0, '重复运行不应重复导入')
-assert.equal(second.existing, first.imported, '第二次应全部判定为已存在')
+assert.equal(second.appended, 0, '源没有新增内容时不应追加')
+assert.equal(second.upToDate, first.imported, '第二次应全部判定为已同步')
 
 const dry = await runSync({ persistence, workspaces: fakeWorkspaces, projections: null }, { limit: 2, dryRun: true })
 assert.equal(dry.imported, 0, 'dry-run 不应写盘')
-assert.ok(dry.sessions.every((row) => row.status === 'existing' || row.status === 'planned'))
+assert.ok(dry.sessions.every((row) => row.status === 'up-to-date' || row.status === 'planned'))
 
 const status = readStatus()
 assert.equal(status.imported, first.imported)

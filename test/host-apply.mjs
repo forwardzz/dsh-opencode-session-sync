@@ -99,7 +99,7 @@ console.log(`list：共 ${list.total} 个会话，返回 ${list.selected.length}
 const dry = await tool.execute({ action: 'import', dryRun: true, limit: 2 })
 assert.equal(dry.ok, true)
 assert.equal(dry.imported, 0, 'dry-run 不应写盘')
-assert.ok(dry.sessions.every((row) => row.status === 'planned' || row.status === 'existing'))
+assert.ok(dry.sessions.every((row) => row.status === 'planned' || row.status === 'up-to-date'))
 console.log(`dry-run：${dry.considered} 个候选，计划 ${dry.sessions.length} 行`)
 
 const imported = await tool.execute({ action: 'import', limit: 2 })

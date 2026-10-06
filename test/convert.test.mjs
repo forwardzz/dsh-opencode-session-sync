@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { buildSessionPlan, dshSessionIdFor, normalizeCwd } from '../lib/convert.js'
+import { buildAppendPlan, buildSessionPlan, dshSessionIdFor, normalizeCwd } from '../lib/convert.js'
 import { validatePlan } from '../lib/validate.js'
 
 const T0 = 1791200000000
@@ -366,4 +366,98 @@ test('模型信息缺失时回退到会话级模型，仍满足 model 来源要�
     provider: 'opencode',
     model: 'unknown',
   })
+})
+
+// ---------------------------------------------------------------- 增量追加
+
+/** 先做一次首次导入，拿到既有日志，再按它的末尾坐标构造追加段。 */
+function importThenAppend(firstRows, laterRows, appendOptions = {}) {
+  const first = plan(firstRows)
+  const lastSeq = first.events.at(-1).seq
+  const maxTurn = Math.max(...first.events.filter((e) => e.type === 'turn/start').map((e) => e.data.turn))
+  const append = buildAppendPlan({
+    session: SESSION,
+    rows: laterRows,
+    options: {
+      startSeq: lastSeq + 1,
+      startTurn: maxTurn + 1,
+      baseTime: first.events.at(-1).time,
+      ...appendOptions,
+    },
+  })
+  return { first, append, combined: { header: first.header, events: [...first.events, ...append.events] } }
+}
+
+test('增量追加：seq 与 turn 号接在既有日志之后，合并后仍通过校验', () => {
+  const { first, append, combined } = importThenAppend(
+    [userRow('第一问'), assistantRow([{ type: 'text', text: '第一答' }]), idleRow()],
+    [userRow('第二问'), assistantRow([{ type: 'text', text: '第二答' }]), idleRow()],
+  )
+  assert.equal(append.events[0].seq, first.events.at(-1).seq + 1)
+  assert.equal(append.events[0].type, 'turn/start')
+  assert.equal(append.events[0].data.turn, 2)
+  assert.deepEqual(
+    combined.events.map((event) => event.seq),
+    combined.events.map((_, index) => index),
+  )
+  assert.deepEqual(validatePlan(combined), [])
+  const users = combined.events.filter((e) => e.type === 'user/message').map((e) => e.data.content[0].text)
+  assert.deepEqual(users, ['第一问', '第二问'])
+})
+
+test('增量追加：idle 行决定轮边界，两轮不会被并成一整轮', () => {
+  const { append } = importThenAppend(
+    [userRow('第一问'), assistantRow([{ type: 'text', text: '第一答' }]), idleRow()],
+    // 故意带上 idle：真实调用方切出的是「源的后缀」，idle 在其中
+    [userRow('第二问'), assistantRow([{ type: 'text', text: '第二答' }]), idleRow(), userRow('第三问'), assistantRow([{ type: 'text', text: '第三答' }]), idleRow()],
+  )
+  assert.deepEqual(append.events.filter((e) => e.type === 'turn/start').map((e) => e.data.turn), [2, 3])
+  assert.equal(append.stats.turns, 2)
+})
+
+test('增量追加：标题没变就不重复写标题事件，变了才补一条', () => {
+  const rows = [userRow('问'), assistantRow([{ type: 'text', text: '答' }]), idleRow()]
+  const same = importThenAppend(rows, [userRow('再问'), assistantRow([{ type: 'text', text: '再答' }]), idleRow()], {
+    currentTitle: '测试会话',
+  })
+  assert.equal(same.append.titleChanged, false)
+  assert.equal(same.append.events.filter((e) => e.type === 'session/title').length, 0)
+
+  const changed = importThenAppend(rows, [userRow('再问'), assistantRow([{ type: 'text', text: '再答' }]), idleRow()], {
+    currentTitle: '旧标题',
+  })
+  assert.equal(changed.append.titleChanged, true)
+  const titles = changed.append.events.filter((e) => e.type === 'session/title')
+  assert.equal(titles.length, 1)
+  assert.equal(titles[0].data.title, '测试会话')
+  assert.deepEqual(validatePlan(changed.combined), [])
+})
+
+test('增量追加：没有可导入的行时不产生任何事件', () => {
+  seq += 1
+  const onlyNoise = [
+    { id: 'msg_sys_1', type: 'system', seq, createdAt: T0, updatedAt: T0, data: { text: '工具变更' } },
+    idleRow(),
+  ]
+  const { append } = importThenAppend([userRow('问'), assistantRow([{ type: 'text', text: '答' }]), idleRow()], onlyNoise)
+  assert.equal(append.events.length, 0)
+  assert.equal(append.stats.events, 0)
+})
+
+test('增量追加：工具调用与错误结果同样接续', () => {
+  const { append, combined } = importThenAppend(
+    [userRow('第一问'), assistantRow([{ type: 'text', text: '第一答' }]), idleRow()],
+    [
+      userRow('第二问'),
+      assistantRow([
+        toolBlock('read', 'call_inc', { content: [{ type: 'text', text: '内容' }] }),
+        toolBlock('bad', 'call_bad', { status: 'error', error: { type: 'unknown', message: 'boom' } }),
+      ]),
+      idleRow(),
+    ],
+  )
+  assert.deepEqual(validatePlan(combined), [])
+  const calls = append.events.filter((e) => e.type === 'tool/call').map((e) => e.data.callId)
+  assert.deepEqual(calls, ['call_inc', 'call_bad'])
+  assert.equal(append.events.find((e) => e.data?.message?.toolCallId === 'call_bad').data.message.isError, true)
 })
