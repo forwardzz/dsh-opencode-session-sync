@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['22.x', '24.x']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: 语法检查（全部 js / mjs）
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r file; do
+            node --check "$file"
+          done < <(git ls-files '*.js' '*.mjs')
+
+      - name: 单元测试（fixture，不依赖 OpenCode 数据库）
+        run: npm test
+
+      - name: 缺少 OpenCode 数据库时应给出提示并退出 2
+        shell: bash
+        run: |
+          set +e
+          node tools/selfcheck.mjs
+          code=$?
+          set -e
+          if [ "$code" -ne 2 ]; then
+            echo "::error::期望退出码 2（没有 OpenCode 数据库），实际为 $code"
+            exit 1
+          fi
+          echo "OK：没有 OpenCode 数据库时按预期退出 2 并给出提示"

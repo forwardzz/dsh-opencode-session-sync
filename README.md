@@ -1,191 +1,217 @@
 # dsh-opencode-session-sync
 
-把 **OpenCode 桌面端**的历史会话按「原本的工作目录」导入成 **DeepSeek Harness 原生会话**，
-让它们在 DSH 对应工作区的会话列表里出现，并且可以直接接着对话。
+[![CI](https://github.com/forwardzz/dsh-opencode-session-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/forwardzz/dsh-opencode-session-sync/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![node](https://img.shields.io/badge/node-%E2%89%A522.5-brightgreen.svg)](https://nodejs.org)
 
-- OpenCode 侧只读：只打开 `opencode.db` 读，从不写。
-- 写入交给 DSH 自己的会话持久化层（`ctx.sessionPersistence`），生成的是标准 V4 会话日志，
-  格式与跨事件关系由 DSH 本体校验，插件不拼字节。
-- 幂等：已存在的会话按 id 跳过；重复运行不会产生副本。
+**把 OpenCode 桌面端的历史会话，按各自原本的工作目录，导入成 DeepSeek Harness 的原生会话。**
 
----
+导入后的会话会出现在 DSH 对应工作区的会话列表里，带原标题、原时间、原模型和完整对话内容，
+可以直接打开查看、继续追问。
 
-## 现在装好了吗
-
-已安装到 `desktop` profile：
-
-| 位置 | 内容 |
-|---|---|
-| `C:\Users\ZJY\Desktop\dsh_ws\dsh-opencode-session-sync` | 插件源码（本目录） |
-| `~/.dsh/profiles/desktop/package.json` | `dependencies` + `dsh.profile.bundles` 已登记（`link:` 到本目录） |
-| `~/.dsh/profiles/desktop/node_modules/dsh-opencode-session-sync` | junction → 本目录 |
-
-> **插件在 DSH 启动时才会加载。** 重启一次 DeepSeek Harness 后生效；启动约 4 秒后会自动跑一次
-> 导入，之后每次启动都会自动补齐新会话（已导入的跳过）。不想重启也行，但那样它不会起作用。
-
-重启后可以这样确认：
-
-```
-~/.dsh/opencode-session-sync/last-run.json      最近一次导入报告（含每个会话的结果）
-~/.dsh/opencode-session-sync/state.json         已导入账本
-```
-
-或者在任意 DSH 会话里让我调用工具 `opencode_sync`（`action: "status"`）。
+- **OpenCode 侧只读** —— 只打开 `opencode.db` 读，从不写它。
+- **生成的是原生会话** —— 写入交给 DSH 自己的会话持久化层，格式与跨事件关系由 DSH 本体校验。
+- **自动归位到工作区** —— 会话按它原本的工作目录落到对应工作区；那个目录还没有工作区时会自动建一个。
+- **幂等** —— 同一个 OpenCode 会话永远映射到同一个 DSH 会话，重复运行不会产生副本。
 
 ---
 
-## 怎么用
+## 安装
 
-### 1. 自动（默认）
+需要 DSH（DeepSeek Harness）已装好并能正常启动，Node.js ≥ 22.5（DSH 能跑就满足）。
 
-启动后自动导入，无需操作：
+**方式一：插件管理命令（如果你的 DSH 版本支持）**
 
-```jsonc
-// ~/.dsh/opencode-session-sync.json
-{ "autoSyncOnStart": true, "autoSyncDelayMs": 4000, "importLimit": 200 }
+```sh
+git clone https://github.com/forwardzz/dsh-opencode-session-sync.git
+dsh plugin --profile desktop add link:<clone 出来的绝对路径>
 ```
 
-### 2. 手动：`opencode_sync` 工具
+**方式二：手工三步（等价，Windows 用目录联接）**
 
-插件给 agent 注册了一个工具 `opencode_sync`，三个动作：
+1. 克隆到任意目录，并在 profile 的 `node_modules` 下建好链接：
+
+   ```powershell
+   git clone https://github.com/forwardzz/dsh-opencode-session-sync.git "$env:USERPROFILE\.dsh\plugins\dsh-opencode-session-sync"
+   New-Item -ItemType Junction `
+     -Path   "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\dsh-opencode-session-sync" `
+     -Target "$env:USERPROFILE\.dsh\plugins\dsh-opencode-session-sync"
+   ```
+
+   macOS / Linux 把最后一步换成 `ln -s <clone 路径> ~/.dsh/profiles/desktop/node_modules/dsh-opencode-session-sync`。
+
+2. 编辑 `~/.dsh/profiles/desktop/package.json`，加依赖：
+
+   ```json
+   "dependencies": {
+     "dsh-opencode-session-sync": "link:<clone 出来的绝对路径>"
+   }
+   ```
+
+   也可以直接在该 profile 目录里执行 `pnpm install`，由 `link:` 声明生成链接。
+
+3. 把 `"dsh-opencode-session-sync"` 加到同一个文件的 `dsh.profile.bundles` 数组末尾。
+
+装完 **重启 DeepSeek Harness** 生效（插件在启动时挂载，加插件或改配置都不会热加载）。
+
+不确定装好没有？在插件目录里跑一次安装自检，它会逐项检查依赖声明、bundles、链接、patch 和入口：
+
+```sh
+node tools/verify-install.mjs
+```
+
+---
+
+## 使用
+
+### 自动同步（默认）
+
+插件在 DSH 启动约 4 秒后自动导入一次，之后每次启动只补齐新会话，已导入的跳过。不需要任何操作。
+
+想确认结果，看这两个文件：
+
+| 文件 | 内容 |
+| --- | --- |
+| `~/.dsh/opencode-session-sync/last-run.json` | 最近一次导入的完整报告（每个会话的结果与原因） |
+| `~/.dsh/opencode-session-sync/state.json` | 已导入账本（OpenCode 会话 id → DSH 会话 id） |
+
+### 手动同步：`opencode_sync` 工具
+
+插件给 agent 注册了一个工具 `opencode_sync`，直接在对话里说就行：
 
 | action | 作用 | 主要参数 |
-|---|---|---|
-| `list` | **只读**盘点：OpenCode 有哪些会话、会落到哪个 DSH 工作区、是否已导入 | `workspace`、`limit`、`includeChildren` |
-| `import` | 执行导入（默认幂等） | `dryRun`（只看计划不写盘）、`force`、`workspace`、`sessionIds`、`limit`、`includeChildren` |
+| --- | --- | --- |
+| `list` | **只读**盘点：OpenCode 有哪些会话、会落到哪个工作区、是否已导入 | `workspace`、`limit`、`includeChildren` |
+| `import` | 执行导入（默认幂等） | `dryRun`、`force`、`workspace`、`sessionIds`、`limit`、`includeChildren` |
 | `status` | 账本与最近一次结果 | — |
 
-对话里直接说就行，例如：
+可以直接这样说：
 
-- 「列出 opencode 里有但 DSH 里还没有的会话」
-- 「把 `dsh_ws` 相关的 OpenCode 会话导进来」
+- 「列出 OpenCode 里有、但 DSH 里还没有的会话」
 - 「先 dry-run 看一下会导入什么」
+- 「只把 `dsh_ws` 相关的 OpenCode 会话导进来」
+- 「把某个指定会话重新导一遍」（`force: true`）
 
-### 3. 命令行自检（不开 DSH 也能跑）
+### 命令行自检
 
-```powershell
-node tools\selfcheck.mjs                 # 盘点 + 转换 + 结构/关系校验（只读）
-node tools\selfcheck.mjs --limit 3        # 只看最近 3 个会话
-node tools\selfcheck.mjs --all            # 连子会话一起转换
-node tools\verify-install.mjs             # 检查安装是否完好
+不启动 DSH 也能检查转换结果（只读，不写任何东西）：
+
+```sh
+node tools/selfcheck.mjs              # 盘点 + 转换 + 结构校验
+node tools/selfcheck.mjs --limit 5    # 只看最近 5 个会话
+node tools/selfcheck.mjs --all        # 连子会话一起转换
+node tools/selfcheck.mjs --db <路径>  # 指定 OpenCode 数据库
 ```
 
----
-
-## 它是怎么对应的
-
-| OpenCode | DSH | 说明 |
-|---|---|---|
-| `session_v2.directory` | `SessionHeader.cwd` | 会话落在按 cwd 命名的存储分桶里，例如 `C:/Users/ZJY/Desktop/dsh_ws` → `sessions/--C-Users-ZJY-Desktop-dsh_ws--/` |
-| （cwd 决定归属） | 工作区注册表 `sessionIds` | 写入后用 `workspaceRegistry` 把会话登记进该目录对应的工作区；目标目录还没有工作区时会自动创建一个 |
-| `session_v2.title` | `session/title` 事件 | 默认加 `[OC] ` 前缀便于与原生会话区分，可用 `titlePrefix` 关掉 |
-| `session_v2.time_created` | `SessionHeader.createdAt` | 保留原始创建时间，列表按真实时间排序 |
-| `session_message(type=user)` | `user/message` | 用户消息正文 |
-| `session_message(type=assistant)` | `assistant/message` + `tool/call` + `tool/result` | 推理/正文/tool 块分别映射；工具入参与输出进 `tool/call`/`tool/result` |
-| `session_message(type=idle)` | `turn/end` | 用 OpenCode 的 idle 事件切分回合 |
-| 模型信息 | `assistant/message.source` | `providerID`/`model.id` 原样保留 |
-| `tokens` | `usage` | 输入/输出/缓存/推理 token |
-
-会话 id 由 OpenCode 会话 id 经 SHA-256 派生（`session-<uuid>`），所以**同一个 OpenCode 会话永远对应同一个 DSH 会话**，重复导入天然幂等。
+退出码：`0` 通过 / `1` 发现问题（逐条列出） / `2` 环境不满足（比如本机没有 OpenCode 数据库）。
 
 ---
 
 ## 配置
 
-`~/.dsh/opencode-session-sync.json`（首次运行自动写出默认值，改完重启生效）：
+配置写在 `~/.dsh/opencode-session-sync.json`，首次运行自动生成默认值，改完重启生效。
 
 | 字段 | 默认 | 说明 |
-|---|---|---|
+| --- | --- | --- |
 | `enabled` | `true` | 关掉后不注册工具、不自动同步 |
-| `dbPath` | 空 = `~/.local/share/opencode/opencode.db` | OpenCode 数据库位置 |
-| `autoSyncOnStart` | `true` | 启动后自动导入 |
+| `dbPath` | 空（用默认位置） | OpenCode 数据库路径 |
+| `autoSyncOnStart` | `true` | 启动后自动导入一次 |
 | `autoSyncDelayMs` | `4000` | 自动导入的延迟，避开启动高峰 |
 | `includeChildren` | `false` | 是否导入 subagent 子会话 |
 | `importLimit` | `200` | 单次最多处理多少个会话（按最近更新优先） |
 | `titlePrefix` | `"[OC] "` | 标题前缀，设 `""` 就不加 |
-| `agentPreset` | `"standard"` | 导入会话的 agent preset |
+| `agentPreset` | `"standard"` | 导入会话使用的 agent preset |
 | `includeReasoning` | `true` | 是否保留推理块 |
 | `includeToolCalls` | `true` | 是否保留工具调用 |
-| `maxToolResultChars` | `200000` | 单个工具输出/文本块的最大字符数，超出截断并标注 |
-| `createMissingWorkspaces` | `true` | 目标目录没有工作区时自动创建 |
+| `maxToolResultChars` | `200000` | 单个工具输出/文本块的最大字符数，超出会截断并标注 |
+| `createMissingWorkspaces` | `true` | 目标目录还没有工作区时自动创建 |
 | `onlyExistingDirectories` | `false` | 只导入目录在本机存在的会话 |
 
----
+默认的 OpenCode 数据库位置：
 
-## 边界（说清楚的限制）
-
-- **只做 OpenCode → DSH 单向导入。** 没有反向导出：那需要写 OpenCode 自己的 `opencode.db`，风险高且你没要求。
-- **子会话默认不导入。** OpenCode 的 subagent 子会话在 DSH 里要变成「父会话下的子会话」还需要往父日志写 `subagent/catalog` 等事实，本版没做；`includeChildren: true` 会把它们当独立会话导入（会丢父子嵌套）。
-- **旧格式正文不解析。** 如果某个会话只有 `message`/`part` 表、`session_message` 里没有行，会被标记为 `legacy-only` 并跳过（本机 36 个会话全部有新格式行，不受影响）。
-- **这些 OpenCode 事件不导入**：`system`（工具变更通知）、`synthetic`（plan mode 等系统提醒）、`compaction`（压缩摘要）、`agent-switched`、`location-switched`。它们会在报告的 `skippedEvents` 里逐类计数，不静默丢失。
-- **目录不存在或不是绝对路径**：会话仍会导入，但不会登记到任何工作区（报告里 `workspaceAction: unattached`）；也可以设 `onlyExistingDirectories: true` 直接跳过。
-- **导入的会话是「冷会话」**：DSH 列表对冷会话只读持久化的投影缓存，所以插件写完日志后会补写一次 `sessionProjectionCache.coldSnapshot`，让侧边栏立刻拿到标题。这一步是 fail-soft 的，失败只会记警告（列表里仍是那一行，只是标题要等打开会话后才出现）。
-- 导入的是**文本记录**，不是「可继续执行的现场」：工具调用会作为历史消息回放给模型，不会重新执行。
-- 导入时间戳与 turn/step 结构是按 OpenCode 的 idle 边界重建的，`turn/end` 一律记为 `completed`。
+- Windows：`%USERPROFILE%\.local\share\opencode\opencode.db`
+- macOS / Linux：`~/.local/share/opencode/opencode.db`
 
 ---
 
-## 依据
+## 会话与工作区怎么对应
 
-事件类别、字段与跨事件关系来自 DSH 自带包的**已发布规范**，不是猜的：
+| OpenCode | DSH | 说明 |
+| --- | --- | --- |
+| `session_v2.directory` | `SessionHeader.cwd` | 决定会话落在哪个工作区，例如 `C:/Users/me/proj` → 工作区 `C:\Users\me\proj` |
+| （由 cwd 决定） | 工作区注册表 | 写入后把会话登记进该目录对应的工作区；目录没有工作区就新建一个 |
+| `session_v2.title` | `session/title` 事件 | 默认加 `[OC] ` 前缀，便于和 DSH 原生会话区分 |
+| `session_v2.time_created` | `SessionHeader.createdAt` | 保留原始创建时间，列表按真实时间排序 |
+| `session_message`（user） | `user/message` | 用户消息正文 |
+| `session_message`（assistant） | `assistant/message` + `tool/call` + `tool/result` | 推理、正文、工具调用分别映射；工具入参和输出一并保留 |
+| `session_message`（idle） | `turn/end` | 用 OpenCode 的 idle 事件切分回合 |
+| 模型信息 | `assistant/message.source` | `providerID` / `model.id` 原样保留 |
+| `tokens` | `usage` | 输入 / 输出 / 缓存 / 推理 token |
 
-- `@deepseek-ai/dsh-session-format-v3-to-v4`（V4 接纳规则、表面事件、工具结果、`session/title`）
-- `@deepseek-ai/dsh-session`（`SessionEventMap`、`invariant` 里的 turn/step 与 tool 调用关系校验）
-- `@deepseek-ai/dsh-session-persistence` / `-jsonl`（`create`/`append`/`flush`/`close`、分桶目录、多帧 zstd）
-- `@deepseek-ai/dsh-session-projection-cache`（`coldSnapshot` 的 fold 语义）
-- `@deepseek-ai/dsh-workspace`（`attachSession`、`bootstrap` 的按 cwd 收纳）
-- OpenCode 侧：本机 `opencode.db` 的 `session_v2` / `session_message` / `message` / `part` 表实测结构
-
-另外用**真实 DSH 会话日志**（`~/.dsh/sessions/**/session.v4.jsonl.zstd`）反查了事件顺序模板：
-`turn/start → step/start → user/message → assistant/message → tool/call → tool/result → step/end → turn/end`。
+会话 id 由 OpenCode 会话 id 经 SHA-256 派生，所以对应关系稳定，重复导入天然幂等。
 
 ---
 
-## 验证证据
+## 实现要点
 
-三条测试都是可复现的命令（需要把 DSH 的 `app.asar` 解压到临时目录当「真实依赖树」）：
+- **不拼字节**：写入调用 DSH 的 `ctx.sessionPersistence`（`create` → `append` → `flush` → `close`），
+  事件类别、字段和跨事件关系（turn/step 顺序、工具调用结算、表面事件语义）全部由 DSH 本体校验。
+  这样即使 DSH 升级会话格式，插件也不需要跟着改字节。
+- **归位靠 `cwd`**：DSH 的会话存储本身就按 cwd 分桶，所以只要 header 的 `cwd` 正确，
+  会话就会落进对应工作区的目录；再用 `workspaceRegistry` 把 id 登记进该工作区的账目。
+- **补写投影缓存**：导入的会话是「冷会话」，DSH 列表对冷会话只读持久化的投影缓存，
+  所以写完日志后会补写一次 `sessionProjectionCache.coldSnapshot`，让侧边栏立刻就有标题。
 
-```powershell
-$python = "C:\Users\ZJY\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe"
-$node   = "C:\Users\ZJY\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe"
-$dsh    = "$env:TEMP\dsh-asar\dsh"
-& $python "C:\Users\ZJY\Desktop\dsh_ws\.oc-sync-tools\asar_extract.py" extract "dsh/" "$env:TEMP\dsh-asar"
+---
 
-node tools\selfcheck.mjs --all --e2e $dsh          # 离线转换 + 真实 DSH 写入/读回
-node test\integration.mjs $dsh                      # 插件同步全流程 + 幂等 + 账本
-node test\host-apply.mjs $dsh                       # 真实 Cordis 上下文里加载插件并调用工具
+## 限制
+
+- **只做单向导入**（OpenCode → DSH）。没有反向导出：那需要写 OpenCode 自己的数据库，风险高。
+- **子会话默认不导入**。OpenCode 的 subagent 子会话要在 DSH 里还原成「父会话下的子会话」，
+  还需要往父日志写 `subagent/catalog` 等事实，本版没做；`includeChildren: true` 会把它们当独立会话导入（会丢父子嵌套）。
+- **旧格式正文不解析**。如果某个会话只有 `message` / `part` 表、`session_message` 里没有行，会被标记为
+  `legacy-only` 并在报告里跳过。
+- **这些 OpenCode 事件不导入**：`system`（工具变更通知）、`synthetic`（系统提醒）、
+  `compaction`（压缩摘要）、`agent-switched`、`location-switched`。
+  它们会在报告的 `skippedEvents` 里逐类计数，不会静默消失。
+- **目录不存在或不是绝对路径**时，会话仍会被导入，但不会登记到任何工作区（报告里记为 `unattached`）；
+  也可以设 `onlyExistingDirectories: true` 直接跳过这类会话。
+- **导入的是文本记录，不是可继续执行的现场**：工具调用会作为历史消息回放给模型，不会重新执行。
+
+---
+
+## 开发与测试
+
+```sh
+npm test                          # 单元测试（fixture 驱动，不需要 OpenCode 数据库）
+node tools/selfcheck.mjs          # 对着本机真实的 OpenCode 库做一次转换 + 结构校验
+node tools/verify-install.mjs     # 检查插件是否装好（依赖、bundles、链接、patch、入口）
 ```
 
-本机实测结果（2026-10-06，OpenCode 库 36 个会话）：
+单元测试覆盖：事件序列与编号、turn/step 切分、工具调用与报错结果、重复 callId 改写、
+空助手行跳过、推理块开关、超长输出截断、标题回退、目录规范化、模型信息回退等；
+每个用例都额外跑一遍 `lib/validate.js` 的结构 + 跨事件关系校验。
 
-| 测试 | 结果 |
-|---|---|
-| `selfcheck --all --e2e` | 36/36 会话转换成功，7792 个事件；用**真实** DSH 持久化层全部写入并读回一致；结构 + 跨事件关系校验 0 问题 |
-| `test/integration.mjs` | 第一次导入 2/2 成功、第二次全部判为已存在（幂等）、dry-run 不写盘、账本与报告落盘、读回事件数一致 |
-| `test/host-apply.mjs` | 插件在真实 Cordis 上下文加载成功，工具 `opencode_sync` 注册成功，`list`/`import`/`status` 三个动作跑通，启动自动同步定时器触发 |
-| `tools/verify-install.mjs` | profile 依赖、bundles、junction、patch、入口全部就位 |
+`test/integration.mjs` 与 `test/host-apply.mjs` 是更强的端到端测试，需要把 DSH 的
+`resources/app.asar` 解压出来当「真实依赖树」：前者用 DSH 真实的会话持久化层跑完整同步流程
+（含幂等与账本），后者在真实的 Cordis 上下文里加载插件并调用工具。用法见文件头部注释。
+
+CI 在 Ubuntu 与 Windows、Node 22 与 24 上跑：全部文件语法检查、单元测试，
+以及「本机没有 OpenCode 数据库时自检脚本应给出提示并退出 2」的行为检查。
 
 ---
 
 ## 卸载
 
-1. 从 `~/.dsh/profiles/desktop/package.json` 的 `dependencies` 和 `dsh.profile.bundles` 里删掉 `dsh-opencode-session-sync`（备份见 `package.json.bak-before-opencode-sync`）。
-2. 删除 `~/.dsh/profiles/desktop/node_modules/dsh-opencode-session-sync`（junction，删除不会动源码）。
+1. 从 `~/.dsh/profiles/<profile>/package.json` 的 `dependencies` 和 `dsh.profile.bundles` 里删掉 `dsh-opencode-session-sync`。
+2. 删掉 `~/.dsh/profiles/<profile>/node_modules/dsh-opencode-session-sync` 这个链接（删链接不会动克隆出来的源码）。
 3. 重启 DSH。
-4. 想连导入的会话一起清掉，就到对应工作区的 `~/.dsh/sessions/--<目录名>--/session-*/` 删除那些 `session.v4.jsonl.zstd`（id 记在 `~/.dsh/opencode-session-sync/state.json`）。
+
+想连导入的会话一起清掉：删掉对应工作区里那些 `~/.dsh/sessions/--<目录名>--/session-*/session.v4.jsonl.zstd`，
+会话 id 记在 `~/.dsh/opencode-session-sync/state.json` 里。
 
 ---
 
-## 目录结构
+## 许可
 
-```
-lib/opencode-db.js   OpenCode SQLite 只读层
-lib/convert.js       OpenCode 会话 → DSH V4 事件（纯函数，无宿主依赖）
-lib/ledger.js        配置 / 账本 / 报告落盘
-lib/sync.js          同步编排：写持久化 + 登记工作区 + 补投影缓存
-lib/index.js         插件入口：注册 opencode_sync 工具 + 启动自动同步
-tools/selfcheck.mjs  离线盘点 + 转换 + 结构校验（--e2e 用真实 DSH 层端到端）
-tools/verify-install.mjs  安装自检
-test/integration.mjs 同步全流程集成测试
-test/host-apply.mjs  宿主装配测试（真实 Cordis + 真实持久化）
-```
+[MIT](./LICENSE) © forwardzz

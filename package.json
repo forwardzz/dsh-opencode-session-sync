@@ -3,11 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "DeepSeek Harness 插件：把 OpenCode 桌面端（opencode.db）的历史会话按工作区导入为 DSH 原生会话",
+  "description": "DeepSeek Harness 插件：把 OpenCode 桌面端（opencode.db）的历史会话按各自原本的工作目录导入为 DSH 原生会话",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
     "./convert": "./lib/convert.js",
+    "./validate": "./lib/validate.js",
     "./opencode-db": "./lib/opencode-db.js",
     "./package.json": "./package.json"
   },
@@ -16,7 +17,8 @@
     "tools",
     "test",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {
@@ -24,12 +26,22 @@
     }
   },
   "scripts": {
+    "test": "node --test test/convert.test.mjs",
     "selfcheck": "node tools/selfcheck.mjs",
-    "test": "node --test test/"
+    "verify-install": "node tools/verify-install.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/forwardzz/dsh-opencode-session-sync.git"
+  },
+  "homepage": "https://github.com/forwardzz/dsh-opencode-session-sync#readme",
+  "bugs": {
+    "url": "https://github.com/forwardzz/dsh-opencode-session-sync/issues"
   },
   "keywords": [
     "dsh",
     "dsh-plugin",
+    "deepseek-harness",
     "opencode",
     "session",
     "migration"
